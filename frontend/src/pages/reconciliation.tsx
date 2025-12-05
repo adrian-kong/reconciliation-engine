@@ -1,0 +1,396 @@
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
+import { Zap, Check, X, ArrowRight } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { 
+  getInvoices, 
+  getPayments, 
+  getSuggestions, 
+  getReconciliations,
+  autoReconcile, 
+  createReconciliation,
+  updateReconciliationStatus
+} from '@/lib/api';
+import { formatCurrency, formatDate, cn } from '@/lib/utils';
+import type { Invoice, Payment, ReconciliationSuggestion } from '@/types';
+
+export function ReconciliationPage() {
+  const queryClient = useQueryClient();
+  const [manualMatch, setManualMatch] = useState<{ invoice: Invoice | null; payment: Payment | null }>({
+    invoice: null,
+    payment: null,
+  });
+
+  const { data: invoices } = useQuery({ queryKey: ['invoices'], queryFn: getInvoices });
+  const { data: payments } = useQuery({ queryKey: ['payments'], queryFn: getPayments });
+  const { data: suggestions, isLoading: suggestionsLoading } = useQuery({ 
+    queryKey: ['suggestions'], 
+    queryFn: getSuggestions 
+  });
+  const { data: reconciliations } = useQuery({ 
+    queryKey: ['reconciliations'], 
+    queryFn: getReconciliations 
+  });
+
+  const autoReconcileMutation = useMutation({
+    mutationFn: (minConfidence: number) => autoReconcile(minConfidence),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['payments'] });
+      queryClient.invalidateQueries({ queryKey: ['suggestions'] });
+      queryClient.invalidateQueries({ queryKey: ['reconciliations'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] });
+    },
+  });
+
+  const manualReconcileMutation = useMutation({
+    mutationFn: ({ invoiceId, paymentId }: { invoiceId: string; paymentId: string }) =>
+      createReconciliation(invoiceId, paymentId),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      queryClient.invalidateQueries({ queryKey: ['payments'] });
+      queryClient.invalidateQueries({ queryKey: ['suggestions'] });
+      queryClient.invalidateQueries({ queryKey: ['reconciliations'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] });
+      setManualMatch({ invoice: null, payment: null });
+    },
+  });
+
+  const updateStatusMutation = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: 'approved' | 'rejected' }) =>
+      updateReconciliationStatus(id, status),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['reconciliations'] });
+    },
+  });
+
+  const pendingInvoices = invoices?.filter(inv => inv.status === 'pending') || [];
+  const pendingPayments = payments?.filter(pay => pay.status === 'pending' || pay.status === 'unmatched') || [];
+  const pendingReview = reconciliations?.filter(rec => rec.status === 'pending_review') || [];
+
+  const getInvoiceById = (id: string) => invoices?.find(inv => inv.id === id);
+  const getPaymentById = (id: string) => payments?.find(pay => pay.id === id);
+
+  const handleApprove = (suggestion: ReconciliationSuggestion) => {
+    manualReconcileMutation.mutate({
+      invoiceId: suggestion.invoiceId,
+      paymentId: suggestion.paymentId,
+    });
+  };
+
+  const handleManualMatch = () => {
+    if (manualMatch.invoice && manualMatch.payment) {
+      manualReconcileMutation.mutate({
+        invoiceId: manualMatch.invoice.id,
+        paymentId: manualMatch.payment.id,
+      });
+    }
+  };
+
+  return (
+    <div className="space-y-6 animate-fade-in">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Reconciliation</h1>
+          <p className="text-muted-foreground text-sm mt-1">
+            Match invoices with payments
+          </p>
+        </div>
+        <Button 
+          onClick={() => autoReconcileMutation.mutate(0.8)}
+          disabled={autoReconcileMutation.isPending}
+          size="sm"
+        >
+          <Zap className="mr-2 h-4 w-4" />
+          {autoReconcileMutation.isPending ? 'Processing...' : 'Auto Reconcile'}
+        </Button>
+      </div>
+
+      {/* Stats */}
+      <div className="grid gap-4 md:grid-cols-4">
+        <div className="rounded-lg border border-border p-4">
+          <p className="text-xs text-muted-foreground">Pending Invoices</p>
+          <p className="text-2xl font-semibold mt-1">{pendingInvoices.length}</p>
+        </div>
+        <div className="rounded-lg border border-border p-4">
+          <p className="text-xs text-muted-foreground">Pending Payments</p>
+          <p className="text-2xl font-semibold mt-1">{pendingPayments.length}</p>
+        </div>
+        <div className="rounded-lg border border-border p-4">
+          <p className="text-xs text-muted-foreground">Suggestions</p>
+          <p className="text-2xl font-semibold mt-1">{suggestions?.length || 0}</p>
+        </div>
+        <div className="rounded-lg border border-border p-4">
+          <p className="text-xs text-muted-foreground">Pending Review</p>
+          <p className="text-2xl font-semibold mt-1">{pendingReview.length}</p>
+        </div>
+      </div>
+
+      {/* Tabs */}
+      <Tabs defaultValue="suggestions" className="space-y-4">
+        <TabsList>
+          <TabsTrigger value="suggestions">Suggestions</TabsTrigger>
+          <TabsTrigger value="manual">Manual Match</TabsTrigger>
+          <TabsTrigger value="review">Review ({pendingReview.length})</TabsTrigger>
+          <TabsTrigger value="history">History</TabsTrigger>
+        </TabsList>
+
+        {/* Suggestions */}
+        <TabsContent value="suggestions">
+          <div className="rounded-lg border border-border">
+            <div className="border-b border-border p-4">
+              <h2 className="text-sm font-medium">Match Suggestions</h2>
+              <p className="text-xs text-muted-foreground mt-1">
+                AI-powered matching based on amount, reference, and date
+              </p>
+            </div>
+            <div className="p-4">
+              {suggestionsLoading ? (
+                <div className="flex justify-center py-8">
+                  <div className="h-5 w-5 animate-spin rounded-full border-2 border-foreground border-t-transparent" />
+                </div>
+              ) : suggestions?.length === 0 ? (
+                <div className="text-center py-8">
+                  <p className="text-sm text-muted-foreground">No suggestions available</p>
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {suggestions?.map((suggestion) => {
+                    const invoice = getInvoiceById(suggestion.invoiceId);
+                    const payment = getPaymentById(suggestion.paymentId);
+                    if (!invoice || !payment) return null;
+
+                    return (
+                      <div 
+                        key={`${suggestion.invoiceId}-${suggestion.paymentId}`}
+                        className="rounded-lg border border-border p-4"
+                      >
+                        <div className="flex items-center gap-4">
+                          {/* Invoice */}
+                          <div className="flex-1">
+                            <p className="text-xs text-muted-foreground">Invoice</p>
+                            <p className="font-mono text-sm">{invoice.invoiceNumber}</p>
+                            <p className="text-sm font-semibold mt-1">{formatCurrency(invoice.amount)}</p>
+                          </div>
+
+                          {/* Arrow + Confidence */}
+                          <div className="flex flex-col items-center gap-1">
+                            <ArrowRight className="h-4 w-4 text-muted-foreground" />
+                            <span className="text-xs text-muted-foreground">
+                              {(suggestion.confidence * 100).toFixed(0)}%
+                            </span>
+                          </div>
+
+                          {/* Payment */}
+                          <div className="flex-1 text-right">
+                            <p className="text-xs text-muted-foreground">Payment</p>
+                            <p className="font-mono text-sm">{payment.paymentReference}</p>
+                            <p className="text-sm font-semibold mt-1">{formatCurrency(payment.amount)}</p>
+                          </div>
+
+                          {/* Action */}
+                          <Button 
+                            size="sm"
+                            onClick={() => handleApprove(suggestion)}
+                            disabled={manualReconcileMutation.isPending}
+                          >
+                            <Check className="h-4 w-4" />
+                          </Button>
+                        </div>
+
+                        {Math.abs(suggestion.discrepancyAmount) > 0.01 && (
+                          <p className="text-xs text-yellow-500 mt-3">
+                            Discrepancy: {formatCurrency(Math.abs(suggestion.discrepancyAmount))}
+                            {suggestion.discrepancyAmount > 0 ? ' overpayment' : ' underpayment'}
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </TabsContent>
+
+        {/* Manual Match */}
+        <TabsContent value="manual">
+          <div className="grid gap-4 lg:grid-cols-2">
+            {/* Invoices */}
+            <div className="rounded-lg border border-border">
+              <div className="border-b border-border p-4">
+                <h2 className="text-sm font-medium">Select Invoice</h2>
+              </div>
+              <div className="p-4 max-h-[400px] overflow-y-auto space-y-2">
+                {pendingInvoices.map((invoice) => (
+                  <button
+                    key={invoice.id}
+                    className={cn(
+                      "w-full rounded-md border p-3 text-left transition-colors",
+                      manualMatch.invoice?.id === invoice.id 
+                        ? "border-foreground" 
+                        : "border-border hover:border-foreground/30"
+                    )}
+                    onClick={() => setManualMatch(prev => ({ ...prev, invoice }))}
+                  >
+                    <p className="font-mono text-sm">{invoice.invoiceNumber}</p>
+                    <p className="text-xs text-muted-foreground">{invoice.vendorName}</p>
+                    <p className="text-sm font-semibold mt-1">{formatCurrency(invoice.amount)}</p>
+                  </button>
+                ))}
+                {pendingInvoices.length === 0 && (
+                  <p className="text-sm text-muted-foreground text-center py-4">No pending invoices</p>
+                )}
+              </div>
+            </div>
+
+            {/* Payments */}
+            <div className="rounded-lg border border-border">
+              <div className="border-b border-border p-4">
+                <h2 className="text-sm font-medium">Select Payment</h2>
+              </div>
+              <div className="p-4 max-h-[400px] overflow-y-auto space-y-2">
+                {pendingPayments.map((payment) => (
+                  <button
+                    key={payment.id}
+                    className={cn(
+                      "w-full rounded-md border p-3 text-left transition-colors",
+                      manualMatch.payment?.id === payment.id 
+                        ? "border-foreground" 
+                        : "border-border hover:border-foreground/30"
+                    )}
+                    onClick={() => setManualMatch(prev => ({ ...prev, payment }))}
+                  >
+                    <p className="font-mono text-sm">{payment.paymentReference}</p>
+                    <p className="text-xs text-muted-foreground">{payment.description}</p>
+                    <p className="text-sm font-semibold mt-1">{formatCurrency(payment.amount)}</p>
+                  </button>
+                ))}
+                {pendingPayments.length === 0 && (
+                  <p className="text-sm text-muted-foreground text-center py-4">No pending payments</p>
+                )}
+              </div>
+            </div>
+          </div>
+
+          {manualMatch.invoice && manualMatch.payment && (
+            <div className="mt-4 rounded-lg border border-border p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-xs text-muted-foreground">Invoice</p>
+                  <p className="font-mono">{formatCurrency(manualMatch.invoice.amount)}</p>
+                </div>
+                <ArrowRight className="h-4 w-4 text-muted-foreground" />
+                <div className="text-right">
+                  <p className="text-xs text-muted-foreground">Payment</p>
+                  <p className="font-mono">{formatCurrency(manualMatch.payment.amount)}</p>
+                </div>
+                <Button 
+                  onClick={handleManualMatch}
+                  disabled={manualReconcileMutation.isPending}
+                  size="sm"
+                >
+                  Match
+                </Button>
+              </div>
+            </div>
+          )}
+        </TabsContent>
+
+        {/* Pending Review */}
+        <TabsContent value="review">
+          <div className="rounded-lg border border-border">
+            <div className="border-b border-border p-4">
+              <h2 className="text-sm font-medium">Pending Review</h2>
+            </div>
+            <div className="p-4">
+              {pendingReview.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-8">Nothing to review</p>
+              ) : (
+                <div className="space-y-3">
+                  {pendingReview.map((rec) => {
+                    const invoice = getInvoiceById(rec.invoiceId);
+                    const payment = getPaymentById(rec.paymentId);
+                    
+                    return (
+                      <div key={rec.id} className="flex items-center justify-between rounded-md border border-border p-3">
+                        <div>
+                          <p className="text-sm">
+                            {invoice?.invoiceNumber} → {payment?.paymentReference}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {formatCurrency(rec.matchedAmount)} • {rec.matchedBy}
+                          </p>
+                        </div>
+                        <div className="flex gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => updateStatusMutation.mutate({ id: rec.id, status: 'rejected' })}
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            onClick={() => updateStatusMutation.mutate({ id: rec.id, status: 'approved' })}
+                          >
+                            <Check className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </TabsContent>
+
+        {/* History */}
+        <TabsContent value="history">
+          <div className="rounded-lg border border-border">
+            <div className="border-b border-border p-4">
+              <h2 className="text-sm font-medium">History</h2>
+            </div>
+            <div className="p-4">
+              {reconciliations?.filter(r => r.status !== 'pending_review').length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-8">No history yet</p>
+              ) : (
+                <div className="space-y-2">
+                  {reconciliations?.filter(r => r.status !== 'pending_review').map((rec) => {
+                    const invoice = getInvoiceById(rec.invoiceId);
+                    const payment = getPaymentById(rec.paymentId);
+
+                    return (
+                      <div key={rec.id} className="flex items-center justify-between py-2 border-b border-border last:border-0">
+                        <div>
+                          <p className="text-sm">
+                            {invoice?.invoiceNumber} ↔ {payment?.paymentReference}
+                          </p>
+                          <p className="text-xs text-muted-foreground">
+                            {formatDate(rec.createdAt)} • {rec.matchedBy}
+                          </p>
+                        </div>
+                        <div className="text-right">
+                          <p className="font-mono text-sm">{formatCurrency(rec.matchedAmount)}</p>
+                          <p className={cn(
+                            "text-xs",
+                            rec.status === 'approved' ? 'text-emerald-500' : 'text-red-500'
+                          )}>
+                            {rec.status}
+                          </p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </TabsContent>
+      </Tabs>
+    </div>
+  );
+}

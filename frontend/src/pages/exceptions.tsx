@@ -1,0 +1,268 @@
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
+import { AlertTriangle, Check, Clock, ArrowUp } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
+import { getExceptions, identifyExceptions, updateExceptionStatus, getInvoices, getPayments } from '@/lib/api';
+import { formatDateTime, getSeverityColor, getStatusColor, cn } from '@/lib/utils';
+import type { Exception, ExceptionStatus } from '@/types';
+
+const exceptionTypeLabels: Record<string, string> = {
+  unmatched_invoice: 'Unmatched Invoice',
+  unmatched_payment: 'Unmatched Payment',
+  amount_discrepancy: 'Amount Discrepancy',
+  duplicate_entry: 'Duplicate Entry',
+  date_variance: 'Date Variance',
+  vendor_mismatch: 'Vendor Mismatch',
+};
+
+export function Exceptions() {
+  const queryClient = useQueryClient();
+  const [selectedException, setSelectedException] = useState<Exception | null>(null);
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+
+  const { data: exceptions, isLoading } = useQuery({
+    queryKey: ['exceptions'],
+    queryFn: getExceptions,
+  });
+
+  const { data: invoices } = useQuery({ queryKey: ['invoices'], queryFn: getInvoices });
+  const { data: payments } = useQuery({ queryKey: ['payments'], queryFn: getPayments });
+
+  const identifyMutation = useMutation({
+    mutationFn: identifyExceptions,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['exceptions'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] });
+    },
+  });
+
+  const updateStatusMutation = useMutation({
+    mutationFn: ({ id, status }: { id: string; status: ExceptionStatus }) =>
+      updateExceptionStatus(id, status, 'Admin'),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['exceptions'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] });
+      setSelectedException(null);
+    },
+  });
+
+  const filteredExceptions = exceptions?.filter((exc) => {
+    if (statusFilter !== 'all' && exc.status !== statusFilter) return false;
+    return true;
+  });
+
+  const getInvoiceById = (id?: string) => id ? invoices?.find(inv => inv.id === id) : null;
+  const getPaymentById = (id?: string) => id ? payments?.find(pay => pay.id === id) : null;
+
+  const openCount = exceptions?.filter(e => e.status === 'open').length || 0;
+
+  if (isLoading) {
+    return (
+      <div className="flex h-[50vh] items-center justify-center">
+        <div className="h-5 w-5 animate-spin rounded-full border-2 border-foreground border-t-transparent" />
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-6 animate-fade-in">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Exceptions</h1>
+          <p className="text-muted-foreground text-sm mt-1">
+            Review and resolve issues
+          </p>
+        </div>
+        <Button 
+          onClick={() => identifyMutation.mutate()}
+          disabled={identifyMutation.isPending}
+          size="sm"
+        >
+          <AlertTriangle className="mr-2 h-4 w-4" />
+          {identifyMutation.isPending ? 'Scanning...' : 'Scan for Issues'}
+        </Button>
+      </div>
+
+      {/* Stats */}
+      <div className="grid gap-4 md:grid-cols-4">
+        <div className="rounded-lg border border-border p-4">
+          <p className="text-xs text-muted-foreground">Open</p>
+          <p className="text-2xl font-semibold mt-1">{openCount}</p>
+        </div>
+        <div className="rounded-lg border border-border p-4">
+          <p className="text-xs text-muted-foreground">In Review</p>
+          <p className="text-2xl font-semibold mt-1">
+            {exceptions?.filter(e => e.status === 'in_review').length || 0}
+          </p>
+        </div>
+        <div className="rounded-lg border border-border p-4">
+          <p className="text-xs text-muted-foreground">Escalated</p>
+          <p className="text-2xl font-semibold mt-1">
+            {exceptions?.filter(e => e.status === 'escalated').length || 0}
+          </p>
+        </div>
+        <div className="rounded-lg border border-border p-4">
+          <p className="text-xs text-muted-foreground">Resolved</p>
+          <p className="text-2xl font-semibold mt-1">
+            {exceptions?.filter(e => e.status === 'resolved').length || 0}
+          </p>
+        </div>
+      </div>
+
+      {/* Filters */}
+      <div className="flex gap-1">
+        {['all', 'open', 'in_review', 'escalated', 'resolved'].map((status) => (
+          <button
+            key={status}
+            onClick={() => setStatusFilter(status)}
+            className={cn(
+              'px-3 py-1.5 text-xs rounded-md transition-colors',
+              statusFilter === status
+                ? 'bg-foreground text-background'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            {status === 'all' ? 'All' : status.replace(/_/g, ' ')}
+          </button>
+        ))}
+      </div>
+
+      {/* Exceptions List */}
+      <div className="rounded-lg border border-border">
+        {filteredExceptions?.length === 0 ? (
+          <div className="p-12 text-center">
+            <Check className="mx-auto h-8 w-8 text-emerald-500" />
+            <p className="mt-2 text-sm text-muted-foreground">No exceptions found</p>
+          </div>
+        ) : (
+          <div className="divide-y divide-border">
+            {filteredExceptions?.map((exception) => {
+              const invoice = getInvoiceById(exception.invoiceId);
+              const payment = getPaymentById(exception.paymentId);
+
+              return (
+                <button
+                  key={exception.id}
+                  className="w-full p-4 text-left hover:bg-accent/50 transition-colors"
+                  onClick={() => setSelectedException(exception)}
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <span className={cn(
+                          "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
+                          getSeverityColor(exception.severity)
+                        )}>
+                          {exception.severity}
+                        </span>
+                        <span className={cn(
+                          "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
+                          getStatusColor(exception.status)
+                        )}>
+                          {exception.status.replace(/_/g, ' ')}
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          {exceptionTypeLabels[exception.type]}
+                        </span>
+                      </div>
+                      <p className="mt-2 text-sm truncate">{exception.description}</p>
+                      <div className="mt-1 flex items-center gap-4 text-xs text-muted-foreground">
+                        {invoice && <span>{invoice.invoiceNumber}</span>}
+                        {payment && <span>{payment.paymentReference}</span>}
+                        <span>{formatDateTime(exception.createdAt)}</span>
+                      </div>
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Exception Detail Dialog */}
+      <Dialog open={!!selectedException} onOpenChange={() => setSelectedException(null)}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Exception</DialogTitle>
+            <DialogDescription>
+              {selectedException && exceptionTypeLabels[selectedException.type]}
+            </DialogDescription>
+          </DialogHeader>
+          
+          {selectedException && (
+            <div className="space-y-4 mt-4">
+              <div className="flex items-center gap-2">
+                <span className={cn(
+                  "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
+                  getSeverityColor(selectedException.severity)
+                )}>
+                  {selectedException.severity}
+                </span>
+                <span className={cn(
+                  "inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium",
+                  getStatusColor(selectedException.status)
+                )}>
+                  {selectedException.status.replace(/_/g, ' ')}
+                </span>
+              </div>
+
+              <div>
+                <p className="text-xs text-muted-foreground">Description</p>
+                <p className="text-sm mt-1">{selectedException.description}</p>
+              </div>
+
+              <div>
+                <p className="text-xs text-muted-foreground">Suggested Action</p>
+                <p className="text-sm mt-1">{selectedException.suggestedAction}</p>
+              </div>
+            </div>
+          )}
+
+          <DialogFooter className="gap-2 mt-4">
+            {selectedException?.status === 'open' && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => updateStatusMutation.mutate({ 
+                    id: selectedException.id, 
+                    status: 'in_review' 
+                  })}
+                >
+                  <Clock className="mr-2 h-4 w-4" />
+                  Review
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => updateStatusMutation.mutate({ 
+                    id: selectedException.id, 
+                    status: 'escalated' 
+                  })}
+                >
+                  <ArrowUp className="mr-2 h-4 w-4" />
+                  Escalate
+                </Button>
+              </>
+            )}
+            {selectedException?.status !== 'resolved' && (
+              <Button
+                size="sm"
+                onClick={() => updateStatusMutation.mutate({ 
+                  id: selectedException!.id, 
+                  status: 'resolved' 
+                })}
+              >
+                <Check className="mr-2 h-4 w-4" />
+                Resolve
+              </Button>
+            )}
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
