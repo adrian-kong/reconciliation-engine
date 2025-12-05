@@ -1,17 +1,23 @@
-# ReconcileIQ - Invoice Reconciliation Engine
+# Reconcile - Invoice Reconciliation Engine
 
-A modern, full-stack application for reconciling central billing invoices with payments. Built with React, TypeScript, Hono, and shadcn/ui.
+A modern, modular reconciliation engine for central billing invoices with PDF processing support. Built with React, TypeScript, Hono, and shadcn/ui.
 
 ## Features
 
+### Core Reconciliation
 - **Dashboard**: Real-time overview of reconciliation status, match rates, and key metrics
 - **Invoice Management**: View, filter, and track all billing invoices
 - **Payment Tracking**: Monitor payments with status tracking and filtering
 - **Smart Reconciliation**: AI-powered matching suggestions with confidence scores
-- **Manual Matching**: Drag-and-drop interface for manual reconciliation
+- **Manual Matching**: Interface for manual invoice-payment matching
 - **Exception Handling**: Identify and resolve discrepancies with workflow management
-- **Data Import**: Bulk import invoices and payments via JSON files
-- **Dark/Light Mode**: Full theme support for comfortable viewing
+
+### PDF Processing (v2.0)
+- **Modular Processors**: Pluggable architecture for different extraction methods
+- **Mistral OCR + LLM**: Vision-based OCR with structured LLM extraction
+- **Cloudflare R2 Storage**: Scalable PDF storage with presigned URLs
+- **Customizable Workflows**: Configure processing pipelines per document type
+- **Future: Positional Regex**: AI-generated deterministic parsing scripts (planned)
 
 ## Tech Stack
 
@@ -37,6 +43,23 @@ A modern, full-stack application for reconciling central billing invoices with p
 
 - Node.js 18+
 - pnpm 8+
+- Mistral AI API key (for PDF processing)
+- Cloudflare R2 bucket (optional, for PDF storage)
+
+### Environment Configuration
+
+Create a `.env` file in the `backend` directory:
+
+```bash
+# Mistral AI API Key (required for PDF processing)
+MISTRAL_API_KEY=your-mistral-api-key
+
+# Cloudflare R2 Configuration (optional - uses mock storage if not set)
+R2_ACCOUNT_ID=your-cloudflare-account-id
+R2_ACCESS_KEY_ID=your-r2-access-key-id
+R2_SECRET_ACCESS_KEY=your-r2-secret-access-key
+R2_BUCKET_NAME=your-bucket-name
+```
 
 ### Installation
 
@@ -48,7 +71,7 @@ pnpm install
 pnpm dev
 
 # Or run them separately
-pnpm dev:backend   # Backend on http://localhost:3001
+pnpm dev:backend   # Backend on http://localhost:3456
 pnpm dev:frontend  # Frontend on http://localhost:5173
 ```
 
@@ -65,10 +88,19 @@ pnpm dev:frontend  # Frontend on http://localhost:5173
 invoice-reconciliation-engine/
 ├── backend/
 │   └── src/
-│       ├── index.ts              # Hono API server
-│       ├── types.ts              # TypeScript types
-│       ├── store.ts              # In-memory data store
-│       └── reconciliation-engine.ts  # Matching logic
+│       ├── index.ts                    # Hono API server
+│       ├── types.ts                    # TypeScript types
+│       ├── store.ts                    # In-memory data store
+│       ├── reconciliation-engine.ts    # Matching logic
+│       ├── processors/                 # Modular document processors
+│       │   ├── types.ts               # Processor interfaces
+│       │   ├── mistral-ocr.ts         # Mistral OCR + LLM processor
+│       │   └── positional-regex.ts    # Future: Deterministic parser
+│       ├── workflows/                  # Processing workflows
+│       │   ├── types.ts               # Workflow definitions
+│       │   └── engine.ts              # Workflow orchestrator
+│       └── storage/                    # Storage adapters
+│           └── r2.ts                  # Cloudflare R2 client
 ├── frontend/
 │   └── src/
 │       ├── components/           # React components
@@ -80,7 +112,56 @@ invoice-reconciliation-engine/
 └── README.md
 ```
 
+## Architecture
+
+### Processor System
+
+The engine uses a modular processor architecture:
+
+```typescript
+// Register a custom processor
+class MyCustomProcessor extends BaseProcessor {
+  async process(context: ProcessorContext): Promise<ProcessingResult> {
+    // Your extraction logic
+  }
+}
+processorRegistry.register(new MyCustomProcessor());
+```
+
+**Built-in Processors:**
+- `mistral-ocr`: Vision OCR + LLM for structured extraction
+- `positional-regex`: (Planned) AI-generated deterministic parsing
+
+### Workflow Engine
+
+Configure custom processing pipelines:
+
+```typescript
+const workflow: WorkflowDefinition = {
+  id: 'custom-invoice-workflow',
+  name: 'Custom Invoice Processing',
+  steps: [
+    { id: 'upload', type: 'upload', onSuccess: 'extract' },
+    { id: 'extract', type: 'extract', processorId: 'mistral-ocr' },
+    { id: 'validate', type: 'validate', onSuccess: 'save' },
+    { id: 'save', type: 'save' },
+  ],
+};
+```
+
 ## API Endpoints
+
+### System
+- `GET /` - Health check with processor/workflow info
+- `GET /api/processors` - List available processors
+- `GET /api/workflows` - List available workflows
+
+### PDF Upload & Processing
+- `POST /api/upload/process` - Upload and process PDF in one step
+- `POST /api/upload` - Upload PDF only (no processing)
+- `POST /api/upload/:fileKey/process` - Process previously uploaded file
+- `POST /api/upload/presign` - Get presigned upload URL for direct upload
+- `GET /api/uploads` - List uploaded files
 
 ### Dashboard
 - `GET /api/dashboard/stats` - Get dashboard statistics
