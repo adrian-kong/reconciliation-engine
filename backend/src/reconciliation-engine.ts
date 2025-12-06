@@ -1,4 +1,4 @@
-import { store } from "./store.js";
+import { mongoStore } from './store/mongo-store.js';
 import type {
   Invoice,
   Payment,
@@ -8,7 +8,7 @@ import type {
   DiscrepancyType,
   DashboardStats,
   Exception,
-} from "./types.js";
+} from './types.js';
 
 const AMOUNT_TOLERANCE = 0.01; // 1 cent tolerance for floating point
 const PARTIAL_MATCH_THRESHOLD = 0.8; // 80% match threshold
@@ -17,9 +17,9 @@ export class ReconciliationEngine {
   /**
    * Generate matching suggestions for unreconciled invoices and payments
    */
-  generateSuggestions(): ReconciliationSuggestion[] {
-    const unreconciledInvoices = store.getUnreconciledInvoices();
-    const unreconciledPayments = store.getUnreconciledPayments();
+  async generateSuggestions(organizationId: string): Promise<ReconciliationSuggestion[]> {
+    const unreconciledInvoices = await mongoStore.getUnreconciledInvoices(organizationId);
+    const unreconciledPayments = await mongoStore.getUnreconciledPayments(organizationId);
     const suggestions: ReconciliationSuggestion[] = [];
 
     for (const invoice of unreconciledInvoices) {
@@ -53,7 +53,7 @@ export class ReconciliationEngine {
     // Exact amount match
     const amountDiff = Math.abs(invoice.amount - payment.amount);
     if (amountDiff <= AMOUNT_TOLERANCE) {
-      matchReasons.push("Exact amount match");
+      matchReasons.push('Exact amount match');
       confidenceScore += 0.5;
     } else if (payment.amount >= invoice.amount * PARTIAL_MATCH_THRESHOLD) {
       // Partial match
@@ -70,7 +70,7 @@ export class ReconciliationEngine {
         .toLowerCase()
         .includes(invoice.invoiceNumber.toLowerCase())
     ) {
-      matchReasons.push("Invoice reference in payment description");
+      matchReasons.push('Invoice reference in payment description');
       confidenceScore += 0.3;
     }
 
@@ -79,17 +79,17 @@ export class ReconciliationEngine {
       this.fuzzyMatch(invoice.vendorName, payment.description) ||
       this.fuzzyMatch(invoice.vendorName, payment.payerName)
     ) {
-      matchReasons.push("Vendor name match");
+      matchReasons.push('Vendor name match');
       confidenceScore += 0.1;
     }
 
     // Date proximity (payment within 30 days of invoice due date)
     const daysDiff = this.daysBetween(invoice.dueDate, payment.paymentDate);
     if (daysDiff <= 30) {
-      matchReasons.push("Payment within 30 days of due date");
+      matchReasons.push('Payment within 30 days of due date');
       confidenceScore += 0.1;
     } else if (daysDiff <= 60) {
-      matchReasons.push("Payment within 60 days of due date");
+      matchReasons.push('Payment within 60 days of due date');
       confidenceScore += 0.05;
     }
 
@@ -109,8 +109,8 @@ export class ReconciliationEngine {
   /**
    * Execute auto-reconciliation for high-confidence matches
    */
-  autoReconcile(minConfidence: number = 0.8): Reconciliation[] {
-    const suggestions = this.generateSuggestions();
+  async autoReconcile(organizationId: string, minConfidence: number = 0.8): Promise<Reconciliation[]> {
+    const suggestions = await this.generateSuggestions(organizationId);
     const reconciled: Reconciliation[] = [];
     const usedInvoices = new Set<string>();
     const usedPayments = new Set<string>();
@@ -120,10 +120,11 @@ export class ReconciliationEngine {
       if (usedInvoices.has(suggestion.invoiceId)) continue;
       if (usedPayments.has(suggestion.paymentId)) continue;
 
-      const reconciliation = this.createReconciliation(
+      const reconciliation = await this.createReconciliation(
+        organizationId,
         suggestion.invoiceId,
         suggestion.paymentId,
-        "auto"
+        'auto'
       );
 
       if (reconciliation) {
@@ -139,14 +140,15 @@ export class ReconciliationEngine {
   /**
    * Create a manual reconciliation between invoice and payment
    */
-  createReconciliation(
+  async createReconciliation(
+    organizationId: string,
     invoiceId: string,
     paymentId: string,
-    matchedBy: "auto" | "manual",
-    notes: string = ""
-  ): Reconciliation | null {
-    const invoice = store.getInvoice(invoiceId);
-    const payment = store.getPayment(paymentId);
+    matchedBy: 'auto' | 'manual',
+    notes: string = ''
+  ): Promise<Reconciliation | null> {
+    const invoice = await mongoStore.getInvoice(organizationId, invoiceId);
+    const payment = await mongoStore.getPayment(organizationId, paymentId);
 
     if (!invoice || !payment) {
       return null;
@@ -160,35 +162,36 @@ export class ReconciliationEngine {
       payment
     );
 
-    const reconciliation = store.createReconciliation({
+    const reconciliation = await mongoStore.createReconciliation(organizationId, {
       invoiceId,
       paymentId,
       matchedAmount: Math.min(invoice.amount, payment.amount),
       matchType,
-      matchConfidence: matchedBy === "auto" ? 0.9 : 1,
+      matchConfidence: matchedBy === 'auto' ? 0.9 : 1,
       discrepancyAmount: amountDiff,
       discrepancyType,
       status:
-        Math.abs(amountDiff) > AMOUNT_TOLERANCE ? "pending_review" : "approved",
+        Math.abs(amountDiff) > AMOUNT_TOLERANCE ? 'pending_review' : 'approved',
       notes,
       matchedBy,
     });
 
     // Update invoice and payment statuses
     if (Math.abs(amountDiff) <= AMOUNT_TOLERANCE) {
-      store.updateInvoiceStatus(invoiceId, "matched");
-      store.updatePaymentStatus(paymentId, "matched");
+      await mongoStore.updateInvoiceStatus(organizationId, invoiceId, 'matched');
+      await mongoStore.updatePaymentStatus(organizationId, paymentId, 'matched');
     } else if (payment.amount < invoice.amount) {
-      store.updateInvoiceStatus(invoiceId, "partially_matched");
-      store.updatePaymentStatus(paymentId, "matched");
+      await mongoStore.updateInvoiceStatus(organizationId, invoiceId, 'partially_matched');
+      await mongoStore.updatePaymentStatus(organizationId, paymentId, 'matched');
     } else {
-      store.updateInvoiceStatus(invoiceId, "matched");
-      store.updatePaymentStatus(paymentId, "partially_matched");
+      await mongoStore.updateInvoiceStatus(organizationId, invoiceId, 'matched');
+      await mongoStore.updatePaymentStatus(organizationId, paymentId, 'partially_matched');
     }
 
     // Create exception if there's a significant discrepancy
     if (Math.abs(amountDiff) > AMOUNT_TOLERANCE) {
-      this.createDiscrepancyException(
+      await this.createDiscrepancyException(
+        organizationId,
         reconciliation,
         invoice,
         payment,
@@ -202,20 +205,21 @@ export class ReconciliationEngine {
   /**
    * Create an exception for amount discrepancy
    */
-  private createDiscrepancyException(
+  private async createDiscrepancyException(
+    organizationId: string,
     reconciliation: Reconciliation,
     invoice: Invoice,
     payment: Payment,
     amountDiff: number
-  ): Exception {
+  ): Promise<Exception> {
     const severity =
       Math.abs(amountDiff) > 1000
-        ? "high"
+        ? 'high'
         : Math.abs(amountDiff) > 100
-        ? "medium"
-        : "low";
+        ? 'medium'
+        : 'low';
 
-    const type = amountDiff > 0 ? "amount_discrepancy" : "amount_discrepancy";
+    const type = 'amount_discrepancy';
     const description =
       amountDiff > 0
         ? `Overpayment of ${Math.abs(amountDiff).toFixed(2)} ${
@@ -227,10 +231,10 @@ export class ReconciliationEngine {
 
     const suggestedAction =
       amountDiff > 0
-        ? "Issue credit note or apply to future invoices"
-        : "Request additional payment or write off balance";
+        ? 'Issue credit note or apply to future invoices'
+        : 'Request additional payment or write off balance';
 
-    return store.createException({
+    return mongoStore.createException(organizationId, {
       type,
       severity,
       invoiceId: invoice.id,
@@ -238,7 +242,7 @@ export class ReconciliationEngine {
       reconciliationId: reconciliation.id,
       description,
       suggestedAction,
-      status: "open",
+      status: 'open',
     });
   }
 
@@ -250,9 +254,9 @@ export class ReconciliationEngine {
     paymentAmount: number
   ): MatchType {
     const diff = paymentAmount - invoiceAmount;
-    if (Math.abs(diff) <= AMOUNT_TOLERANCE) return "exact";
-    if (diff > 0) return "overpayment";
-    return "underpayment";
+    if (Math.abs(diff) <= AMOUNT_TOLERANCE) return 'exact';
+    if (diff > 0) return 'overpayment';
+    return 'underpayment';
   }
 
   /**
@@ -264,15 +268,15 @@ export class ReconciliationEngine {
     payment: Payment
   ): DiscrepancyType | undefined {
     if (Math.abs(amountDiff) <= AMOUNT_TOLERANCE) return undefined;
-    if (invoice.currency !== payment.currency) return "currency_mismatch";
-    return "amount_mismatch";
+    if (invoice.currency !== payment.currency) return 'currency_mismatch';
+    return 'amount_mismatch';
   }
 
   /**
    * Simple fuzzy string matching
    */
   private fuzzyMatch(str1: string, str2: string): boolean {
-    const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const normalize = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, '');
     const n1 = normalize(str1);
     const n2 = normalize(str2);
     return n2.includes(n1) || n1.includes(n2);
@@ -291,11 +295,11 @@ export class ReconciliationEngine {
   /**
    * Generate dashboard statistics
    */
-  getDashboardStats(): DashboardStats {
-    const invoices = store.getAllInvoices();
-    const payments = store.getAllPayments();
-    const reconciliations = store.getAllReconciliations();
-    const exceptions = store.getAllExceptions();
+  async getDashboardStats(organizationId: string): Promise<DashboardStats> {
+    const invoices = await mongoStore.getAllInvoices(organizationId);
+    const payments = await mongoStore.getAllPayments(organizationId);
+    const reconciliations = await mongoStore.getAllReconciliations(organizationId);
+    const exceptions = await mongoStore.getAllExceptions(organizationId);
 
     const totalInvoiceAmount = invoices.reduce(
       (sum, inv) => sum + inv.amount,
@@ -311,20 +315,20 @@ export class ReconciliationEngine {
     );
 
     const matchedInvoices = invoices.filter(
-      (inv) => inv.status === "matched" || inv.status === "partially_matched"
+      (inv) => inv.status === 'matched' || inv.status === 'partially_matched'
     );
     const unreconciledInvoices = invoices.filter(
-      (inv) => inv.status === "pending"
+      (inv) => inv.status === 'pending'
     );
     const unreconciledPayments = payments.filter(
-      (pay) => pay.status === "pending" || pay.status === "unmatched"
+      (pay) => pay.status === 'pending' || pay.status === 'unmatched'
     );
 
     return {
       totalInvoices: invoices.length,
       totalPayments: payments.length,
       totalReconciled: reconciliations.length,
-      totalExceptions: exceptions.filter((e) => e.status === "open").length,
+      totalExceptions: exceptions.filter((e) => e.status === 'open').length,
       totalInvoiceAmount,
       totalPaymentAmount,
       reconciledAmount,
@@ -347,31 +351,31 @@ export class ReconciliationEngine {
   /**
    * Identify and create exceptions for unmatched items
    */
-  identifyExceptions(): Exception[] {
+  async identifyExceptions(organizationId: string): Promise<Exception[]> {
     const newExceptions: Exception[] = [];
-    const unreconciledInvoices = store.getUnreconciledInvoices();
-    const unreconciledPayments = store.getUnreconciledPayments();
-    const existingExceptions = store.getAllExceptions();
+    const unreconciledInvoices = await mongoStore.getUnreconciledInvoices(organizationId);
+    const unreconciledPayments = await mongoStore.getUnreconciledPayments(organizationId);
+    const existingExceptions = await mongoStore.getAllExceptions(organizationId);
 
     // Check for overdue unmatched invoices
     const today = new Date();
     for (const invoice of unreconciledInvoices) {
       const dueDate = new Date(invoice.dueDate);
       const hasException = existingExceptions.some(
-        (e) => e.invoiceId === invoice.id && e.status !== "resolved"
+        (e) => e.invoiceId === invoice.id && e.status !== 'resolved'
       );
 
       if (!hasException && dueDate < today) {
-        const exception = store.createException({
-          type: "unmatched_invoice",
+        const exception = await mongoStore.createException(organizationId, {
+          type: 'unmatched_invoice',
           severity:
             this.daysBetween(invoice.dueDate, today.toISOString()) > 30
-              ? "high"
-              : "medium",
+              ? 'high'
+              : 'medium',
           invoiceId: invoice.id,
           description: `Invoice ${invoice.invoiceNumber} is overdue and has no matching payment`,
-          suggestedAction: "Review payment records or follow up with payer",
-          status: "open",
+          suggestedAction: 'Review payment records or follow up with payer',
+          status: 'open',
         });
         newExceptions.push(exception);
       }
@@ -380,17 +384,17 @@ export class ReconciliationEngine {
     // Check for unmatched payments
     for (const payment of unreconciledPayments) {
       const hasException = existingExceptions.some(
-        (e) => e.paymentId === payment.id && e.status !== "resolved"
+        (e) => e.paymentId === payment.id && e.status !== 'resolved'
       );
 
       if (!hasException) {
-        const exception = store.createException({
-          type: "unmatched_payment",
-          severity: payment.amount > 10000 ? "high" : "medium",
+        const exception = await mongoStore.createException(organizationId, {
+          type: 'unmatched_payment',
+          severity: payment.amount > 10000 ? 'high' : 'medium',
           paymentId: payment.id,
           description: `Payment ${payment.paymentReference} has no matching invoice`,
-          suggestedAction: "Identify corresponding invoice or process refund",
-          status: "open",
+          suggestedAction: 'Identify corresponding invoice or process refund',
+          status: 'open',
         });
         newExceptions.push(exception);
       }

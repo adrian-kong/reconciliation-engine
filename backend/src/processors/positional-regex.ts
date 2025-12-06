@@ -29,6 +29,7 @@ import {
   DocumentClassification,
   ExtractedInvoice,
   ExtractedPayment,
+  ExtractedRemittance,
   processorRegistry,
 } from './types.js';
 
@@ -99,7 +100,7 @@ export class PositionalRegexProcessor extends BaseProcessor {
     id: 'positional-regex',
     name: 'Positional Regex Parser',
     description: 'AI-generated regex patterns based on PDF text positions for deterministic extraction',
-    supportedTypes: ['invoice', 'payment'],
+    supportedTypes: ['invoice', 'payment', 'remittance'],
   };
 
   private parsingScripts: Map<string, ParsingScript> = new Map();
@@ -135,6 +136,10 @@ export class PositionalRegexProcessor extends BaseProcessor {
   }
 
   async extractPayment(context: ProcessorContext): Promise<ProcessingResult<ExtractedPayment>> {
+    return this.createResult(false, Date.now(), undefined, 'Not implemented');
+  }
+
+  async extractRemittance(context: ProcessorContext): Promise<ProcessingResult<ExtractedRemittance>> {
     return this.createResult(false, Date.now(), undefined, 'Not implemented');
   }
 

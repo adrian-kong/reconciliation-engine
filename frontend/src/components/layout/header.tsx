@@ -1,21 +1,18 @@
-import { Search } from 'lucide-react';
+import { Search } from "lucide-react";
 
 export function Header() {
   return (
-    <header className="sticky top-0 z-30 flex h-14 items-center justify-between border-b border-border bg-background/80 px-6 backdrop-blur-sm">
+    <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-border bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 px-6">
       {/* Search */}
-      <div className="relative w-64">
-        <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-        <input
-          type="text"
-          placeholder="Search..."
-          className="h-9 w-full rounded-md border border-border bg-background pl-9 pr-4 text-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-foreground/20"
-        />
-      </div>
-
-      {/* User */}
-      <div className="flex items-center gap-3">
-        <div className="h-8 w-8 rounded-full bg-gradient-to-br from-neutral-700 to-neutral-900" />
+      <div className="flex items-center gap-4 flex-1">
+        <div className="relative max-w-md flex-1">
+          <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <input
+            type="text"
+            placeholder="Search remittances..."
+            className="h-9 w-full rounded-lg border border-input bg-background pl-10 pr-4 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
+          />
+        </div>
       </div>
     </header>
   );

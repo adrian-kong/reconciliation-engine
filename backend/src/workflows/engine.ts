@@ -1,7 +1,12 @@
-import { nanoid } from 'nanoid';
-import { getR2 } from '../storage/r2.js';
-import { processorRegistry, ProcessorContext, ExtractedInvoice, ExtractedPayment } from '../processors/types.js';
-import { store } from '../store.js';
+import { nanoid } from "nanoid";
+import {
+  processorRegistry,
+  ProcessorContext,
+  ExtractedInvoice,
+  ExtractedPayment,
+  ExtractedRemittance,
+} from "../processors/types";
+import { mongoStore } from "../store/mongo-store.js";
 import {
   WorkflowDefinition,
   WorkflowExecution,
@@ -12,7 +17,10 @@ import {
   WorkflowStatus,
   DEFAULT_INVOICE_WORKFLOW,
   DEFAULT_PAYMENT_WORKFLOW,
-} from './types.js';
+} from "./types";
+import { r2 } from "../storage";
+import { PutObjectCommand } from "@aws-sdk/client-s3";
+import { config } from "../lib/config";
 
 // ============ Workflow Engine ============
 
@@ -62,7 +70,7 @@ export class WorkflowEngine {
     const execution: WorkflowExecution = {
       id: nanoid(),
       workflowId,
-      status: 'running',
+      status: "running",
       startedAt: new Date().toISOString(),
       stepResults: [],
       input,
@@ -72,15 +80,21 @@ export class WorkflowEngine {
 
     try {
       const processorId = options.processorId || workflow.defaultProcessor;
-      const output = await this.runSteps(workflow, execution, input, processorId);
-      
-      execution.status = 'completed';
+      const output = await this.runSteps(
+        workflow,
+        execution,
+        input,
+        processorId
+      );
+
+      execution.status = "completed";
       execution.completedAt = new Date().toISOString();
       execution.output = output;
     } catch (error) {
-      execution.status = 'failed';
+      execution.status = "failed";
       execution.completedAt = new Date().toISOString();
-      execution.error = error instanceof Error ? error.message : 'Unknown error';
+      execution.error =
+        error instanceof Error ? error.message : "Unknown error";
     }
 
     return execution;
@@ -96,14 +110,14 @@ export class WorkflowEngine {
     processorId?: string
   ): Promise<WorkflowOutput> {
     const output: WorkflowOutput = {};
-    let currentStepId = workflow.steps[0]?.id;
-    
+    let currentStepId: string | undefined = workflow.steps[0]?.id;
+
     // Context that accumulates through steps
     let context: ProcessorContext | null = null;
     let fileKey: string | undefined = input.fileKey;
 
     while (currentStepId) {
-      const step = workflow.steps.find(s => s.id === currentStepId);
+      const step = workflow.steps.find((s) => s.id === currentStepId);
       if (!step) break;
 
       execution.currentStepId = currentStepId;
@@ -121,7 +135,7 @@ export class WorkflowEngine {
 
         stepResult = {
           stepId: step.id,
-          status: 'success',
+          status: "success",
           startedAt: new Date(stepStartTime).toISOString(),
           completedAt: new Date().toISOString(),
           output: result.data,
@@ -153,14 +167,15 @@ export class WorkflowEngine {
               });
               stepResult = {
                 stepId: step.id,
-                status: 'success',
+                status: "success",
                 startedAt: new Date(stepStartTime).toISOString(),
                 completedAt: new Date().toISOString(),
                 output: result.data,
               };
               if (result.context) context = result.context;
               if (result.fileKey) fileKey = result.fileKey;
-              if (result.extractedData) output.extractedData = result.extractedData;
+              if (result.extractedData)
+                output.extractedData = result.extractedData;
               currentStepId = step.onSuccess;
               retried = true;
               break;
@@ -176,10 +191,10 @@ export class WorkflowEngine {
 
         stepResult = {
           stepId: step.id,
-          status: 'failure',
+          status: "failure",
           startedAt: new Date(stepStartTime).toISOString(),
           completedAt: new Date().toISOString(),
-          error: error instanceof Error ? error.message : 'Unknown error',
+          error: error instanceof Error ? error.message : "Unknown error",
         };
 
         currentStepId = step.onFailure;
@@ -212,39 +227,47 @@ export class WorkflowEngine {
     data?: unknown;
     context?: ProcessorContext;
     fileKey?: string;
-    extractedData?: ExtractedInvoice | ExtractedPayment;
-    documentType?: 'invoice' | 'payment' | 'statement' | 'unknown';
+    extractedData?: ExtractedInvoice | ExtractedPayment | ExtractedRemittance;
+    documentType?:
+      | "invoice"
+      | "payment"
+      | "statement"
+      | "remittance"
+      | "unknown";
     savedRecordId?: string;
   }> {
     const { input, output, context, fileKey, processorId } = state;
 
     switch (step.type) {
-      case 'upload': {
+      case "upload": {
         if (!input.fileBuffer) {
-          throw new Error('No file buffer provided');
+          throw new Error("No file buffer provided");
         }
+        const Key = `documents/${input.metadata?.organizationId}/${input.fileName}`;
 
-        const r2 = getR2();
-        const result = await r2.upload(input.fileBuffer, {
-          fileName: input.fileName,
-          prefix: 'documents',
-          contentType: input.mimeType,
-        });
+        const result = await r2.send(
+          new PutObjectCommand({
+            Bucket: config.R2_BUCKET,
+            Key,
+            Body: input.fileBuffer,
+            ContentType: input.mimeType,
+          })
+        );
 
         return {
           data: result,
-          fileKey: result.key,
+          fileKey: Key,
           context: {
             fileBuffer: input.fileBuffer,
-            fileName: input.fileName || 'document.pdf',
-            mimeType: input.mimeType || 'application/pdf',
+            fileName: input.fileName || "document.pdf",
+            mimeType: input.mimeType || "application/pdf",
           },
         };
       }
 
-      case 'classify': {
+      case "classify": {
         if (!context) {
-          throw new Error('No context available for classification');
+          throw new Error("No context available for classification");
         }
 
         const processor = processorId
@@ -252,7 +275,7 @@ export class WorkflowEngine {
           : processorRegistry.getAll()[0];
 
         if (!processor) {
-          throw new Error('No processor available');
+          throw new Error("No processor available");
         }
 
         const classification = await processor.classifyDocument(context);
@@ -262,9 +285,9 @@ export class WorkflowEngine {
         };
       }
 
-      case 'extract': {
+      case "extract": {
         if (!context) {
-          throw new Error('No context available for extraction');
+          throw new Error("No context available for extraction");
         }
 
         const processor = processorId
@@ -272,22 +295,22 @@ export class WorkflowEngine {
           : processorRegistry.getAll()[0];
 
         if (!processor) {
-          throw new Error('No processor available');
+          throw new Error("No processor available");
         }
 
-        const documentType = output.documentType || 'invoice';
+        const documentType = output.documentType || "invoice";
         let result;
 
-        if (documentType === 'invoice') {
+        if (documentType === "invoice") {
           result = await processor.extractInvoice(context);
-        } else if (documentType === 'payment') {
+        } else if (documentType === "payment") {
           result = await processor.extractPayment(context);
         } else {
           result = await processor.process(context);
         }
 
         if (!result.success) {
-          throw new Error(result.error || 'Extraction failed');
+          throw new Error(result.error || "Extraction failed");
         }
 
         return {
@@ -296,41 +319,46 @@ export class WorkflowEngine {
         };
       }
 
-      case 'validate': {
+      case "validate": {
         if (!output.extractedData) {
-          throw new Error('No extracted data to validate');
+          throw new Error("No extracted data to validate");
         }
 
         const data = output.extractedData;
         const errors: string[] = [];
 
         // Basic validation
-        if ('invoiceNumber' in data) {
-          if (!data.invoiceNumber) errors.push('Missing invoice number');
-          if (!data.amount || data.amount <= 0) errors.push('Invalid amount');
-          if (!data.vendorName) errors.push('Missing vendor name');
-        } else if ('paymentReference' in data) {
-          if (!data.paymentReference) errors.push('Missing payment reference');
-          if (!data.amount || data.amount <= 0) errors.push('Invalid amount');
+        if ("invoiceNumber" in data) {
+          if (!data.invoiceNumber) errors.push("Missing invoice number");
+          if (!data.amount || data.amount <= 0) errors.push("Invalid amount");
+          if (!data.vendorName) errors.push("Missing vendor name");
+        } else if ("paymentReference" in data) {
+          if (!data.paymentReference) errors.push("Missing payment reference");
+          if (!data.amount || data.amount <= 0) errors.push("Invalid amount");
         }
 
         if (errors.length > 0) {
-          throw new Error(`Validation failed: ${errors.join(', ')}`);
+          throw new Error(`Validation failed: ${errors.join(", ")}`);
         }
 
         return { data: { valid: true } };
       }
 
-      case 'save': {
+      case "save": {
         if (!output.extractedData) {
-          throw new Error('No extracted data to save');
+          throw new Error("No extracted data to save");
+        }
+
+        const organizationId = input.metadata?.organizationId as string;
+        if (!organizationId) {
+          throw new Error("No organizationId provided for save step");
         }
 
         const data = output.extractedData;
         let savedId: string;
 
-        if ('invoiceNumber' in data) {
-          const invoice = store.createInvoice({
+        if ("invoiceNumber" in data) {
+          const invoice = await mongoStore.createInvoice(organizationId, {
             invoiceNumber: data.invoiceNumber,
             vendorName: data.vendorName,
             vendorId: data.vendorId || `V-${Date.now()}`,
@@ -338,7 +366,7 @@ export class WorkflowEngine {
             currency: data.currency,
             issueDate: data.issueDate,
             dueDate: data.dueDate || data.issueDate,
-            description: data.description || '',
+            description: data.description || "",
             lineItems: (data.lineItems || []).map((item, i) => ({
               id: `LI-${i}`,
               description: item.description,
@@ -346,22 +374,22 @@ export class WorkflowEngine {
               unitPrice: item.unitPrice || item.amount,
               amount: item.amount,
             })),
-            status: 'pending',
+            status: "pending",
           });
           savedId = invoice.id;
         } else {
           const paymentData = data as ExtractedPayment;
-          const payment = store.createPayment({
+          const payment = await mongoStore.createPayment(organizationId, {
             paymentReference: paymentData.paymentReference,
             payerName: paymentData.payerName,
             payerId: paymentData.payerId || `P-${Date.now()}`,
             amount: paymentData.amount,
             currency: paymentData.currency,
             paymentDate: paymentData.paymentDate,
-            paymentMethod: paymentData.paymentMethod || 'other',
+            paymentMethod: paymentData.paymentMethod || "other",
             bankReference: paymentData.bankReference,
-            description: paymentData.description || '',
-            status: 'pending',
+            description: paymentData.description || "",
+            status: "pending",
           });
           savedId = payment.id;
         }
@@ -369,7 +397,7 @@ export class WorkflowEngine {
         return { data: { savedId }, savedRecordId: savedId };
       }
 
-      case 'notify': {
+      case "notify": {
         // Notification logic - could integrate with webhooks, email, etc.
         const notifyType = step.config?.type as string;
         console.log(`[Workflow] Notification: ${notifyType}`, {
@@ -379,7 +407,7 @@ export class WorkflowEngine {
         return { data: { notified: true, type: notifyType } };
       }
 
-      case 'transform': {
+      case "transform": {
         // Transform logic - could be custom transformations
         return { data: output.extractedData };
       }
@@ -390,9 +418,8 @@ export class WorkflowEngine {
   }
 
   private delay(ms: number): Promise<void> {
-    return new Promise(resolve => setTimeout(resolve, ms));
+    return new Promise((resolve) => setTimeout(resolve, ms));
   }
 }
 
 export const workflowEngine = new WorkflowEngine();
-

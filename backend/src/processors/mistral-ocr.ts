@@ -8,8 +8,10 @@ import {
   DocumentType,
   ExtractedInvoice,
   ExtractedPayment,
+  ExtractedRemittance,
   ExtractedInvoiceSchema,
   ExtractedPaymentSchema,
+  ExtractedRemittanceSchema,
   processorRegistry,
 } from './types.js';
 
@@ -20,7 +22,7 @@ export class MistralOCRProcessor extends BaseProcessor {
     id: 'mistral-ocr',
     name: 'Mistral OCR + LLM',
     description: 'Uses Mistral AI vision for OCR and LLM for structured extraction',
-    supportedTypes: ['invoice', 'payment', 'statement'],
+    supportedTypes: ['invoice', 'payment', 'statement', 'remittance'],
   };
 
   private client: Mistral | null = null;
@@ -60,6 +62,8 @@ export class MistralOCRProcessor extends BaseProcessor {
         return this.extractInvoice(context);
       } else if (classification.type === 'payment') {
         return this.extractPayment(context);
+      } else if (classification.type === 'remittance') {
+        return this.extractRemittance(context);
       } else {
         return this.createResult(
           false,
@@ -103,11 +107,17 @@ export class MistralOCRProcessor extends BaseProcessor {
             content: [
               {
                 type: 'text',
-                text: `Classify this document. Is it an invoice, payment record/receipt, bank statement, or something else?
+                text: `Classify this document. What type is it?
+
+- "remittance" - A remittance advice showing payment details for multiple work orders/jobs (common in fleet/mechanic billing)
+- "invoice" - A single invoice requesting payment
+- "payment" - A payment record or receipt
+- "statement" - A bank or account statement
+- "unknown" - Cannot determine
 
 Respond with JSON only:
 {
-  "type": "invoice" | "payment" | "statement" | "unknown",
+  "type": "remittance" | "invoice" | "payment" | "statement" | "unknown",
   "confidence": 0.0-1.0,
   "reasoning": "brief explanation"
 }`,
@@ -350,6 +360,142 @@ Required JSON format:
         startTime,
         undefined,
         error instanceof Error ? error.message : 'Payment extraction failed'
+      );
+    }
+  }
+
+  /**
+   * Extract remittance data (fleet company → mechanic franchise)
+   */
+  async extractRemittance(context: ProcessorContext): Promise<ProcessingResult<ExtractedRemittance>> {
+    const startTime = Date.now();
+
+    try {
+      const client = this.getClient();
+      const base64 = context.fileBuffer.toString('base64');
+
+      // Step 1: OCR with vision model
+      const ocrResponse = await client.chat.complete({
+        model: this.model,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'text',
+                text: `Extract all text from this remittance advice document. This is a payment notice from a fleet company to a mechanic shop/franchise listing work orders being paid.
+
+Include all details:
+- Remittance/payment reference number
+- Fleet company name and details
+- Shop/franchise name if shown
+- Remittance date and payment date
+- Payment method, check number, bank reference
+- List of all work orders/jobs with:
+  - Work order number
+  - Vehicle info (year, make, model, plate/unit number)
+  - Service date
+  - Description of work
+  - Labor amount
+  - Parts amount
+  - Total amount
+  - Payment status
+- Any deductions or adjustments
+- Total payment amount
+
+Return the extracted text in a structured format.`,
+              },
+              {
+                type: 'image_url',
+                imageUrl: `data:${context.mimeType};base64,${base64}`,
+              },
+            ],
+          },
+        ],
+      });
+
+      const ocrText = ocrResponse.choices?.[0]?.message?.content;
+      if (typeof ocrText !== 'string') {
+        return this.createResult(false, startTime, undefined, 'OCR extraction failed');
+      }
+
+      // Step 2: Structure extraction with text model
+      const structureResponse = await client.chat.complete({
+        model: this.textModel,
+        messages: [
+          {
+            role: 'system',
+            content: `You are a remittance document extraction expert for mechanic/fleet billing. Extract structured data from remittance advice documents.
+Always respond with valid JSON only, no markdown or explanations.`,
+          },
+          {
+            role: 'user',
+            content: `Extract remittance data from this text and return as JSON:
+
+${ocrText}
+
+Required JSON format:
+{
+  "remittanceNumber": "string (payment/remittance reference)",
+  "fleetCompanyName": "string",
+  "fleetCompanyId": "string or null",
+  "shopName": "string or null (mechanic shop/franchise name)",
+  "shopId": "string or null",
+  "remittanceDate": "YYYY-MM-DD",
+  "paymentDate": "YYYY-MM-DD or null",
+  "totalAmount": number,
+  "currency": "USD",
+  "paymentMethod": "bank_transfer" | "check" | "credit_card" | "direct_debit" | "ach" | "other",
+  "checkNumber": "string or null",
+  "bankReference": "string or null",
+  "jobs": [
+    {
+      "workOrderNumber": "string",
+      "vehicleInfo": "string (e.g. '2019 Ford F-150 - Unit 123')",
+      "serviceDate": "YYYY-MM-DD",
+      "description": "string",
+      "laborAmount": number or null,
+      "partsAmount": number or null,
+      "totalAmount": number,
+      "status": "paid" | "partial" | "disputed" | "pending"
+    }
+  ],
+  "deductions": [
+    {
+      "description": "string",
+      "amount": number
+    }
+  ],
+  "notes": "string or null",
+  "confidence": 0.0-1.0
+}`,
+          },
+        ],
+        responseFormat: { type: 'json_object' },
+      });
+
+      const structuredContent = structureResponse.choices?.[0]?.message?.content;
+      if (typeof structuredContent !== 'string') {
+        return this.createResult(false, startTime, undefined, 'Structure extraction failed');
+      }
+
+      const parsed = JSON.parse(structuredContent);
+      const validated = ExtractedRemittanceSchema.parse({
+        ...parsed,
+        rawText: ocrText,
+      });
+
+      return this.createResult(true, startTime, validated, undefined, {
+        ocrModel: this.model,
+        structureModel: this.textModel,
+        jobCount: validated.jobs.length,
+      });
+    } catch (error) {
+      return this.createResult(
+        false,
+        startTime,
+        undefined,
+        error instanceof Error ? error.message : 'Remittance extraction failed'
       );
     }
   }

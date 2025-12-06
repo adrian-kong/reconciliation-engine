@@ -1,4 +1,4 @@
-import { DocumentType, ProcessingResult, ExtractedInvoice, ExtractedPayment } from '../processors/types.js';
+import { DocumentType, ProcessingResult, ExtractedInvoice, ExtractedPayment, ExtractedRemittance } from '../processors/types.js';
 
 // ============ Workflow Step Types ============
 
@@ -84,7 +84,7 @@ export interface WorkflowInput {
 
 export interface WorkflowOutput {
   documentType?: DocumentType;
-  extractedData?: ExtractedInvoice | ExtractedPayment;
+  extractedData?: ExtractedInvoice | ExtractedPayment | ExtractedRemittance;
   processingResult?: ProcessingResult;
   savedRecordId?: string;
 }

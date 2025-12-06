@@ -1,5 +1,6 @@
 export interface Invoice {
   id: string;
+  organizationId: string;
   invoiceNumber: string;
   vendorName: string;
   vendorId: string;
@@ -32,6 +33,7 @@ export type InvoiceStatus =
 
 export interface Payment {
   id: string;
+  organizationId: string;
   paymentReference: string;
   payerName: string;
   payerId: string;
@@ -64,6 +66,7 @@ export type PaymentStatus =
 
 export interface Reconciliation {
   id: string;
+  organizationId: string;
   invoiceId: string;
   paymentId: string;
   matchedAmount: number;
@@ -101,6 +104,7 @@ export type ReconciliationStatus =
 
 export interface Exception {
   id: string;
+  organizationId: string;
   type: ExceptionType;
   severity: 'low' | 'medium' | 'high' | 'critical';
   invoiceId?: string;
@@ -148,5 +152,96 @@ export interface ReconciliationSuggestion {
   confidence: number;
   matchReasons: string[];
   discrepancyAmount: number;
+}
+
+// ============ Remittance Types ============
+
+export interface Remittance {
+  id: string;
+  organizationId: string;
+  remittanceNumber: string;
+  fleetCompanyName: string;
+  fleetCompanyId?: string;
+  shopName?: string;
+  shopId?: string;
+  remittanceDate: string;
+  paymentDate?: string;
+  totalAmount: number;
+  currency: string;
+  paymentMethod?: PaymentMethod | 'ach';
+  checkNumber?: string;
+  bankReference?: string;
+  jobs: RemittanceJob[];
+  deductions?: RemittanceDeduction[];
+  notes?: string;
+  sourceFileKey?: string;
+  processingJobId?: string;
+  status: RemittanceStatus;
+  confidence?: number;
+  rawText?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RemittanceJob {
+  id: string;
+  workOrderNumber: string;
+  vehicleInfo?: string;
+  serviceDate: string;
+  description: string;
+  laborAmount?: number;
+  partsAmount?: number;
+  totalAmount: number;
+  status: 'paid' | 'partial' | 'disputed' | 'pending';
+}
+
+export interface RemittanceDeduction {
+  description: string;
+  amount: number;
+}
+
+export type RemittanceStatus = 
+  | 'processing'
+  | 'completed'
+  | 'failed'
+  | 'review_required';
+
+// ============ Processing Job Types ============
+
+export interface ProcessingJob {
+  id: string;
+  organizationId: string;
+  fileName: string;
+  fileKey?: string;
+  fileSize: number;
+  mimeType: string;
+  documentType: 'invoice' | 'payment' | 'remittance' | 'unknown';
+  status: ProcessingStatus;
+  workflowId: string;
+  currentStep?: string;
+  progress: number;
+  result?: ProcessingJobResult;
+  error?: string;
+  startedAt: string;
+  completedAt?: string;
+  createdAt: string;
+}
+
+export type ProcessingStatus =
+  | 'queued'
+  | 'uploading'
+  | 'processing'
+  | 'extracting'
+  | 'validating'
+  | 'saving'
+  | 'completed'
+  | 'failed';
+
+export interface ProcessingJobResult {
+  documentType: string;
+  extractedData?: unknown;
+  savedRecordId?: string;
+  processingTimeMs: number;
+  confidence?: number;
 }
 

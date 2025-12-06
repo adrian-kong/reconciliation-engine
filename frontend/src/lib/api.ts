@@ -9,22 +9,34 @@ import type {
   ReconciliationStatus 
 } from '@/types';
 
-const API_BASE = '/api';
+const API_BASE = 'http://localhost:3456/api';
 
 async function fetchApi<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${endpoint}`, {
     ...options,
+    credentials: 'include', // Send cookies with requests
     headers: {
       'Content-Type': 'application/json',
       ...options?.headers,
     },
   });
-  
+
+  // Handle auth errors
+  if (response.status === 401) {
+    window.location.href = '/login';
+    throw new Error('Unauthorized');
+  }
+
+  if (response.status === 403) {
+    window.location.href = '/select-org';
+    throw new Error('No organization selected');
+  }
+
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Unknown error' }));
     throw new Error(error.error || 'API request failed');
   }
-  
+
   return response.json();
 }
 

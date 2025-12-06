@@ -1,15 +1,19 @@
-import { Outlet } from 'react-router-dom';
+import { ReactNode } from 'react';
 import { Sidebar } from './sidebar';
 import { Header } from './header';
 
-export function Layout() {
+interface LayoutProps {
+  children: ReactNode;
+}
+
+export function Layout({ children }: LayoutProps) {
   return (
-    <div className="min-h-screen bg-background">
+    <div className="flex min-h-screen bg-background">
       <Sidebar />
-      <div className="pl-56">
+      <div className="flex-1 flex flex-col min-w-0">
         <Header />
-        <main className="p-6">
-          <Outlet />
+        <main className="flex-1">
+          {children}
         </main>
       </div>
     </div>

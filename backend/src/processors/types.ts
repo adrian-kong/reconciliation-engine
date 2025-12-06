@@ -40,13 +40,51 @@ export const ExtractedPaymentSchema = z.object({
   rawText: z.string().optional(),
 });
 
+// ============ Remittance Job Schema (Fleet → Mechanic Franchise) ============
+
+export const RemittanceJobSchema = z.object({
+  workOrderNumber: z.string(),
+  vehicleInfo: z.string().optional(), // e.g., "2019 Ford F-150 - ABC123"
+  serviceDate: z.string(),
+  description: z.string(),
+  laborAmount: z.number().optional(),
+  partsAmount: z.number().optional(),
+  totalAmount: z.number(),
+  status: z.enum(['paid', 'partial', 'disputed', 'pending']).optional(),
+});
+
+export const ExtractedRemittanceSchema = z.object({
+  remittanceNumber: z.string(),
+  fleetCompanyName: z.string(),
+  fleetCompanyId: z.string().optional(),
+  shopName: z.string().optional(),
+  shopId: z.string().optional(),
+  remittanceDate: z.string(),
+  paymentDate: z.string().optional(),
+  totalAmount: z.number(),
+  currency: z.string().default('USD'),
+  paymentMethod: z.enum(['bank_transfer', 'check', 'credit_card', 'direct_debit', 'ach', 'other']).optional(),
+  checkNumber: z.string().optional(),
+  bankReference: z.string().optional(),
+  jobs: z.array(RemittanceJobSchema),
+  deductions: z.array(z.object({
+    description: z.string(),
+    amount: z.number(),
+  })).optional(),
+  notes: z.string().optional(),
+  confidence: z.number().min(0).max(1).optional(),
+  rawText: z.string().optional(),
+});
+
 export type ExtractedInvoice = z.infer<typeof ExtractedInvoiceSchema>;
 export type ExtractedPayment = z.infer<typeof ExtractedPaymentSchema>;
+export type ExtractedRemittance = z.infer<typeof ExtractedRemittanceSchema>;
+export type RemittanceJob = z.infer<typeof RemittanceJobSchema>;
 export type LineItem = z.infer<typeof LineItemSchema>;
 
 // ============ Document Types ============
 
-export type DocumentType = 'invoice' | 'payment' | 'statement' | 'unknown';
+export type DocumentType = 'invoice' | 'payment' | 'statement' | 'remittance' | 'unknown';
 
 export interface DocumentClassification {
   type: DocumentType;
@@ -98,6 +136,8 @@ export abstract class BaseProcessor {
   abstract extractInvoice(context: ProcessorContext): Promise<ProcessingResult<ExtractedInvoice>>;
 
   abstract extractPayment(context: ProcessorContext): Promise<ProcessingResult<ExtractedPayment>>;
+
+  abstract extractRemittance(context: ProcessorContext): Promise<ProcessingResult<ExtractedRemittance>>;
 
   protected createResult<T>(
     success: boolean,

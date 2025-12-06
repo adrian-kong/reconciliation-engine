@@ -1,5 +1,6 @@
 export interface Invoice {
   id: string;
+  organizationId: string;
   invoiceNumber: string;
   vendorName: string;
   vendorId: string;
@@ -32,6 +33,7 @@ export type InvoiceStatus =
 
 export interface Payment {
   id: string;
+  organizationId: string;
   paymentReference: string;
   payerName: string;
   payerId: string;
@@ -64,6 +66,7 @@ export type PaymentStatus =
 
 export interface Reconciliation {
   id: string;
+  organizationId: string;
   invoiceId: string;
   paymentId: string;
   matchedAmount: number;
@@ -101,6 +104,7 @@ export type ReconciliationStatus =
 
 export interface Exception {
   id: string;
+  organizationId: string;
   type: ExceptionType;
   severity: 'low' | 'medium' | 'high' | 'critical';
   invoiceId?: string;
@@ -149,4 +153,16 @@ export interface ReconciliationSuggestion {
   matchReasons: string[];
   discrepancyAmount: number;
 }
+
+// ============ Processing Job Types ============
+
+export const STEP_DEFINITIONS = [
+  { id: "upload", name: "Uploading to storage" },
+  { id: "ocr", name: "Extracting text (OCR)" },
+  { id: "extract", name: "Parsing document structure" },
+  { id: "validate", name: "Validating data" },
+  { id: "save", name: "Saving remittance" },
+] as const;
+
+export type StepId = typeof STEP_DEFINITIONS[number]["id"];
 
