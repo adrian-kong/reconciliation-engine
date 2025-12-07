@@ -18,9 +18,9 @@ import {
   DEFAULT_INVOICE_WORKFLOW,
   DEFAULT_PAYMENT_WORKFLOW,
 } from "./types";
-import { r2 } from "../storage";
-import { PutObjectCommand } from "@aws-sdk/client-s3";
-import { config } from "../lib/config";
+import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { config, r2 } from "../lib/config";
 
 // ============ Workflow Engine ============
 
@@ -254,6 +254,13 @@ export class WorkflowEngine {
           })
         );
 
+        // Generate presigned URL for the uploaded file
+        const getCommand = new GetObjectCommand({
+          Bucket: config.R2_BUCKET,
+          Key,
+        });
+        const fileUrl = await getSignedUrl(r2, getCommand, { expiresIn: 3600 });
+
         return {
           data: result,
           fileKey: Key,
@@ -261,6 +268,7 @@ export class WorkflowEngine {
             fileBuffer: input.fileBuffer,
             fileName: input.fileName || "document.pdf",
             mimeType: input.mimeType || "application/pdf",
+            fileUrl,
           },
         };
       }

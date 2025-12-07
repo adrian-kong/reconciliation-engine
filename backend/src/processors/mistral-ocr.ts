@@ -21,12 +21,12 @@ export class MistralOCRProcessor extends BaseProcessor {
   readonly config: ProcessorConfig = {
     id: 'mistral-ocr',
     name: 'Mistral OCR + LLM',
-    description: 'Uses Mistral AI vision for OCR and LLM for structured extraction',
+    description: 'Uses Mistral AI OCR API for document processing and LLM for structured extraction',
     supportedTypes: ['invoice', 'payment', 'statement', 'remittance'],
   };
 
   private client: Mistral | null = null;
-  private model: string = 'pixtral-12b-2409'; // Vision model for OCR
+  private ocrModel: string = 'mistral-ocr-latest'; // Dedicated OCR model
   private textModel: string = 'mistral-large-latest'; // For structured extraction
 
   constructor(apiKey?: string) {
@@ -45,6 +45,28 @@ export class MistralOCRProcessor extends BaseProcessor {
       this.client = new Mistral({ apiKey });
     }
     return this.client;
+  }
+
+  /**
+   * Perform OCR on a document URL using Mistral's dedicated OCR API
+   */
+  private async performOCR(documentUrl: string): Promise<string> {
+    const client = this.getClient();
+
+    const ocrResponse = await client.ocr.process({
+      model: this.ocrModel,
+      document: {
+        type: 'document_url',
+        documentUrl,
+      },
+    });
+
+    // Combine all pages' markdown content
+    const markdown = ocrResponse.pages
+      .map((page) => page.markdown)
+      .join('\n\n---\n\n');
+
+    return markdown;
   }
 
   /**
@@ -83,7 +105,7 @@ export class MistralOCRProcessor extends BaseProcessor {
   }
 
   /**
-   * Classify document type using vision model
+   * Classify document type using OCR + LLM
    */
   async classifyDocument(context: ProcessorContext): Promise<DocumentClassification> {
     // If hint provided, use it
@@ -96,19 +118,22 @@ export class MistralOCRProcessor extends BaseProcessor {
     }
 
     try {
-      const client = this.getClient();
-      const base64 = context.fileBuffer.toString('base64');
+      // Step 1: OCR the document
+      const ocrText = await this.performOCR(context.fileUrl);
 
+      // Step 2: Classify using LLM
+      const client = this.getClient();
       const response = await client.chat.complete({
-        model: this.model,
+        model: this.textModel,
         messages: [
           {
             role: 'user',
-            content: [
-              {
-                type: 'text',
-                text: `Classify this document. What type is it?
+            content: `Classify this document based on its content. What type is it?
 
+Document text:
+${ocrText}
+
+Document types:
 - "remittance" - A remittance advice showing payment details for multiple work orders/jobs (common in fleet/mechanic billing)
 - "invoice" - A single invoice requesting payment
 - "payment" - A payment record or receipt
@@ -121,27 +146,19 @@ Respond with JSON only:
   "confidence": 0.0-1.0,
   "reasoning": "brief explanation"
 }`,
-              },
-              {
-                type: 'image_url',
-                imageUrl: `data:${context.mimeType};base64,${base64}`,
-              },
-            ],
           },
         ],
+        responseFormat: { type: 'json_object' },
       });
 
       const content = response.choices?.[0]?.message?.content;
       if (typeof content === 'string') {
-        const jsonMatch = content.match(/\{[\s\S]*\}/);
-        if (jsonMatch) {
-          const parsed = JSON.parse(jsonMatch[0]);
-          return {
-            type: parsed.type as DocumentType,
-            confidence: parsed.confidence,
-            reasoning: parsed.reasoning,
-          };
-        }
+        const parsed = JSON.parse(content);
+        return {
+          type: parsed.type as DocumentType,
+          confidence: parsed.confidence,
+          reasoning: parsed.reasoning,
+        };
       }
 
       return { type: 'unknown', confidence: 0.5 };
@@ -158,43 +175,11 @@ Respond with JSON only:
     const startTime = Date.now();
 
     try {
-      const client = this.getClient();
-      const base64 = context.fileBuffer.toString('base64');
-
-      // Step 1: OCR with vision model
-      const ocrResponse = await client.chat.complete({
-        model: this.model,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'text',
-                text: `Extract all text from this invoice document. Include all details like:
-- Invoice number
-- Vendor/company name and address
-- Dates (issue date, due date)
-- Line items with descriptions, quantities, prices
-- Subtotal, tax, total amounts
-- Payment terms
-
-Return the extracted text in a structured format.`,
-              },
-              {
-                type: 'image_url',
-                imageUrl: `data:${context.mimeType};base64,${base64}`,
-              },
-            ],
-          },
-        ],
-      });
-
-      const ocrText = ocrResponse.choices?.[0]?.message?.content;
-      if (typeof ocrText !== 'string') {
-        return this.createResult(false, startTime, undefined, 'OCR extraction failed');
-      }
+      // Step 1: OCR with dedicated OCR API
+      const ocrText = await this.performOCR(context.fileUrl);
 
       // Step 2: Structure extraction with text model
+      const client = this.getClient();
       const structureResponse = await client.chat.complete({
         model: this.textModel,
         messages: [
@@ -249,7 +234,7 @@ Required JSON format:
       });
 
       return this.createResult(true, startTime, validated, undefined, {
-        ocrModel: this.model,
+        ocrModel: this.ocrModel,
         structureModel: this.textModel,
       });
     } catch (error) {
@@ -269,44 +254,11 @@ Required JSON format:
     const startTime = Date.now();
 
     try {
-      const client = this.getClient();
-      const base64 = context.fileBuffer.toString('base64');
-
-      // Step 1: OCR with vision model
-      const ocrResponse = await client.chat.complete({
-        model: this.model,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'text',
-                text: `Extract all text from this payment document/receipt. Include all details like:
-- Payment/transaction reference number
-- Payer name
-- Amount paid
-- Payment date
-- Payment method (bank transfer, check, card, etc.)
-- Bank reference if available
-- Description or memo
-
-Return the extracted text in a structured format.`,
-              },
-              {
-                type: 'image_url',
-                imageUrl: `data:${context.mimeType};base64,${base64}`,
-              },
-            ],
-          },
-        ],
-      });
-
-      const ocrText = ocrResponse.choices?.[0]?.message?.content;
-      if (typeof ocrText !== 'string') {
-        return this.createResult(false, startTime, undefined, 'OCR extraction failed');
-      }
+      // Step 1: OCR with dedicated OCR API
+      const ocrText = await this.performOCR(context.fileUrl);
 
       // Step 2: Structure extraction with text model
+      const client = this.getClient();
       const structureResponse = await client.chat.complete({
         model: this.textModel,
         messages: [
@@ -351,7 +303,7 @@ Required JSON format:
       });
 
       return this.createResult(true, startTime, validated, undefined, {
-        ocrModel: this.model,
+        ocrModel: this.ocrModel,
         structureModel: this.textModel,
       });
     } catch (error) {
@@ -371,55 +323,11 @@ Required JSON format:
     const startTime = Date.now();
 
     try {
-      const client = this.getClient();
-      const base64 = context.fileBuffer.toString('base64');
-
-      // Step 1: OCR with vision model
-      const ocrResponse = await client.chat.complete({
-        model: this.model,
-        messages: [
-          {
-            role: 'user',
-            content: [
-              {
-                type: 'text',
-                text: `Extract all text from this remittance advice document. This is a payment notice from a fleet company to a mechanic shop/franchise listing work orders being paid.
-
-Include all details:
-- Remittance/payment reference number
-- Fleet company name and details
-- Shop/franchise name if shown
-- Remittance date and payment date
-- Payment method, check number, bank reference
-- List of all work orders/jobs with:
-  - Work order number
-  - Vehicle info (year, make, model, plate/unit number)
-  - Service date
-  - Description of work
-  - Labor amount
-  - Parts amount
-  - Total amount
-  - Payment status
-- Any deductions or adjustments
-- Total payment amount
-
-Return the extracted text in a structured format.`,
-              },
-              {
-                type: 'image_url',
-                imageUrl: `data:${context.mimeType};base64,${base64}`,
-              },
-            ],
-          },
-        ],
-      });
-
-      const ocrText = ocrResponse.choices?.[0]?.message?.content;
-      if (typeof ocrText !== 'string') {
-        return this.createResult(false, startTime, undefined, 'OCR extraction failed');
-      }
+      // Step 1: OCR with dedicated OCR API
+      const ocrText = await this.performOCR(context.fileUrl);
 
       // Step 2: Structure extraction with text model
+      const client = this.getClient();
       const structureResponse = await client.chat.complete({
         model: this.textModel,
         messages: [
@@ -486,7 +394,7 @@ Required JSON format:
       });
 
       return this.createResult(true, startTime, validated, undefined, {
-        ocrModel: this.model,
+        ocrModel: this.ocrModel,
         structureModel: this.textModel,
         jobCount: validated.jobs.length,
       });

@@ -3,7 +3,7 @@ import { zValidator } from "@hono/zod-validator";
 import { z } from "zod";
 import { requireAuth, requireOrg } from "../middleware/auth.js";
 import { workflowEngine } from "../workflows/engine.js";
-import { r2 } from "../storage/r2.js";
+import { r2 } from "../lib/config.js";
 import { processFileSchema, presignUploadSchema } from "./schemas.js";
 import type { DocumentType } from "../processors/types.js";
 import {

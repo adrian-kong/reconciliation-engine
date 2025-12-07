@@ -14,7 +14,7 @@ export interface AuthVariables {
     id: string;
     userId: string;
     expiresAt: Date;
-    activeOrganizationId?: string;
+    activeOrganizationId?: string | null;
   } | null;
   organizationId: string | null;
 }

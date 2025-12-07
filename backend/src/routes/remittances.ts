@@ -3,7 +3,7 @@ import { streamSSE } from "hono/streaming";
 import { nanoid } from "nanoid";
 import { requireAuth, requireOrg } from "../middleware/auth.js";
 import { collections, OrgRemittance, OrgProcessingJob } from "../lib/db.js";
-import { r2 } from "../storage/r2.js";
+import { r2 } from "../lib/config.js";
 import { processorRegistry } from "../processors/types.js";
 import type { ProcessingJob, Remittance, RemittanceJob } from "../types.js";
 import type { ExtractedRemittance } from "../processors/types.js";
@@ -460,6 +460,13 @@ async function processRemittanceAsync(
       throw new Error("Mistral OCR processor not available");
     }
 
+    // Generate presigned URL for the uploaded file
+    const getCommand = new GetObjectCommand({
+      Bucket: config.R2_BUCKET,
+      Key,
+    });
+    const fileUrl = await getSignedUrl(r2, getCommand, { expiresIn: 3600 });
+
     // Step 3: Extract
     await updateJob({
       status: "extracting",
@@ -476,6 +483,7 @@ async function processRemittanceAsync(
       fileBuffer: buffer,
       fileName,
       mimeType: "application/pdf",
+      fileUrl,
       hints: { expectedType: "remittance" },
     });
 

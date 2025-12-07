@@ -34,7 +34,7 @@ declare module "hono" {
       id: string;
       userId: string;
       expiresAt: Date;
-      activeOrganizationId?: string;
+      activeOrganizationId?: string | null;
     } | null;
     organizationId: string | null;
   }

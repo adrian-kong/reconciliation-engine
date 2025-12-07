@@ -94,15 +94,25 @@ export interface DocumentClassification {
 
 // ============ Processing Result ============
 
-export interface ProcessingResult<T = ExtractedInvoice | ExtractedPayment> {
-  success: boolean;
-  data?: T;
-  documentType?: DocumentType;
-  error?: string;
-  processorId: string;
-  processingTimeMs: number;
-  metadata?: Record<string, unknown>;
-}
+export type ProcessingResult<T = ExtractedInvoice | ExtractedPayment | ExtractedRemittance> =
+  | {
+      success: true;
+      data: T;
+      documentType?: DocumentType;
+      error?: undefined;
+      processorId: string;
+      processingTimeMs: number;
+      metadata?: Record<string, unknown>;
+    }
+  | {
+      success: false;
+      data?: undefined;
+      documentType?: DocumentType;
+      error: string;
+      processorId: string;
+      processingTimeMs: number;
+      metadata?: Record<string, unknown>;
+    };
 
 // ============ Processor Interface ============
 
@@ -118,7 +128,7 @@ export interface ProcessorContext {
   fileBuffer: Buffer;
   fileName: string;
   mimeType: string;
-  fileUrl?: string;
+  fileUrl: string;
   hints?: {
     expectedType?: DocumentType;
     vendorHint?: string;
@@ -140,20 +150,43 @@ export abstract class BaseProcessor {
   abstract extractRemittance(context: ProcessorContext): Promise<ProcessingResult<ExtractedRemittance>>;
 
   protected createResult<T>(
+    success: true,
+    startTime: number,
+    data: T,
+    error?: undefined,
+    metadata?: Record<string, unknown>
+  ): ProcessingResult<T>;
+  protected createResult<T>(
+    success: false,
+    startTime: number,
+    data: undefined,
+    error: string,
+    metadata?: Record<string, unknown>
+  ): ProcessingResult<T>;
+  protected createResult<T>(
     success: boolean,
     startTime: number,
-    data?: T,
-    error?: string,
+    data: T | undefined,
+    error: string | undefined,
     metadata?: Record<string, unknown>
   ): ProcessingResult<T> {
-    return {
-      success,
-      data,
-      error,
-      processorId: this.config.id,
-      processingTimeMs: Date.now() - startTime,
-      metadata,
-    };
+    if (success) {
+      return {
+        success: true,
+        data: data as T,
+        processorId: this.config.id,
+        processingTimeMs: Date.now() - startTime,
+        metadata,
+      };
+    } else {
+      return {
+        success: false,
+        error: error!,
+        processorId: this.config.id,
+        processingTimeMs: Date.now() - startTime,
+        metadata,
+      };
+    }
   }
 }
 
